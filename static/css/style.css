@@ -1,0 +1,5 @@
+/* static/css/style.css */
+body { font-family: "Segoe UI", Roboto, Arial, sans-serif; }
+.card { border-radius: 8px; }
+.img-fluid { max-height: 300px; object-fit: contain; display:block; margin:0 auto; }
+pre { background: transparent; border: none; white-space: pre-wrap; }
