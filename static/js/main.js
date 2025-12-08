@@ -96,7 +96,41 @@ function runExperiment() {
             table += `${k} | ${t} | ${e} | ${ae} | ${re}\n`;
         });
 
-        if(qs("params_est")) qs("params_est").innerText = table;
+const tbody = qs("params_est_table");
+if (tbody) {
+    tbody.innerHTML = "";
+
+    const modelName = qs("model")?.value || "--";
+    const N_val = qs("N")?.value || "--";
+    const sigma_val = qs("sigma")?.value || "--";
+
+    Object.keys(params).forEach(k => {
+        const row = document.createElement("tr");
+
+        const trueVal = trueParams[k] !== undefined ? trueParams[k] : "--";
+        const estVal = params[k] ?? "--";
+        const absErr = abs_err[k] ?? "--";
+
+        // Proper relative error handling
+        let relErr = "--";
+        if (trueVal !== 0) {
+            relErr = (rel_err[k] !== undefined) ? rel_err[k] : "--";
+        }
+
+        row.innerHTML = `
+            <td>${modelName}</td>
+            <td>${N_val}</td>
+            <td>${sigma_val}</td>
+            <td>${k}</td>
+            <td>${estVal}</td>
+            <td>${absErr}</td>
+            <td>${relErr}</td>
+        `;
+
+        tbody.appendChild(row);
+    });
+}
+
 
         if(qs("r2")) qs("r2").innerText = (data.r2 !== undefined) ? data.r2.toFixed(4) : "--";
         if(qs("snr")) qs("snr").innerText = (data.snr !== undefined) ? data.snr.toFixed(2) : "--";
