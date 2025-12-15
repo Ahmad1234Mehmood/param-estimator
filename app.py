@@ -7,9 +7,11 @@ from matplotlib.backends.backend_pdf import PdfPages
 from io import BytesIO
 import base64
 from scipy import stats
+from flask import session
 from scipy.interpolate import griddata
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
+app.secret_key = "param-estimator-secret"
 
 # ---------------------------
 # Helpers
@@ -169,6 +171,112 @@ def plot_heatmap(matrix, Ns_display, sigmas_display):
 def index():
     return render_template("index.html")
 
+# @app.route("/run", methods=["POST"])
+# def run_one():
+#     data = request.json
+#     model = data.get("model", "linear")
+#     a = float(data.get("a", 1.0))
+#     b = float(data.get("b", 0.0))
+#     xmin = float(data.get("xmin", 0.0))
+#     xmax = float(data.get("xmax", 10.0))
+#     N = int(data.get("N", 50))
+#     sigma = float(data.get("sigma", 0.1))
+#     bins = int(data.get("bins", 20))
+#     noise_type = data.get("noise_type", "gaussian")
+#     do_fit = bool(data.get("fit", True))
+#     window_method = data.get("window_method", "transformed")
+
+#     # map params
+#     if model == "linear":
+#         true_params = {"A": a, "B": b}
+#     elif model == "exponential":
+#         true_params = {"lambda": a, "mu": b}
+#     else:
+#         true_params = {"a": a, "b": b}
+
+#     # generate system + single noise vector (for this run)
+#     x, y_true = generate_system(model, (a, b), N, xmin, xmax)
+#     if noise_type == "gaussian":
+#         noise = np.random.normal(0, sigma, size=N)
+#     else:
+#         noise = np.random.uniform(-sigma, sigma, size=N)
+#     y_noisy = y_true + noise
+
+#     # compute SNR (dB)
+#     snr = 20.0 * np.log10((np.linalg.norm(y_true) + 1e-12) / (np.linalg.norm(noise) + 1e-12))
+
+#     # Figures
+#     fig_sys = plot_system(x, y_true)
+#     fig_hist = plot_hist(noise, bins)
+#     fig_sys_noise = plot_system_noise(x, y_true, y_noisy)
+
+#     # Regression
+#     est_params = {k: 0.0 for k in true_params.keys()}
+#     r2 = 0.0
+#     best_window_info = {}
+#     r2_results = {}
+#     y_fit = np.zeros_like(x)
+
+#     if do_fit:
+#         xt_all, yt_all, mask_all = apply_transform(model, x, y_noisy)
+
+#         if window_method == "original":
+#             if model == "linear":
+#                 xt = x.copy()
+#                 yt = y_noisy.copy()
+#             else:
+#                 xt_tmp, yt_tmp, mask_tmp = apply_transform(model, x, y_noisy)
+#                 xt = xt_tmp.copy()
+#                 yt = yt_tmp.copy()
+#             best, r2_results = evaluate_windows(xt, yt, mode="original")
+#             b0, b1, r2 = best["b0"], best["b1"], best["r2"]
+#             best_window_info = best
+#         else:
+#             xt, yt, mask = apply_transform(model, x, y_noisy)
+#             if len(xt) >= 2:
+#                 best, r2_results = evaluate_windows(xt, yt, mode="transformed")
+#                 b0, b1, r2 = best["b0"], best["b1"], best["r2"]
+#                 best_window_info = best
+#             else:
+#                 b0, b1, r2 = 0.0, 0.0, 0.0
+#                 best_window_info = {"ratio": "N/A", "r2": r2}
+
+#         est_params = inverse_params(model, b0, b1)
+
+#         # reconstruct fitted curve
+#         if model == "linear":
+#             y_fit = est_params["A"] * x + est_params["B"]
+#         elif model == "exponential":
+#             y_fit = est_params["lambda"] * np.exp(est_params["mu"] * x)
+#         elif model == "power":
+#             x_pos = np.maximum(x, 1e-8)
+#             y_fit = est_params["a"] * (x_pos ** est_params["b"])
+#         elif model == "logarithmic":
+#             x_pos = np.maximum(x, 1e-8)
+#             y_fit = est_params["a"] * np.log(x_pos) + est_params["b"]
+
+#     fig_fit = plot_fit(x, y_noisy, y_fit)
+
+#     # errors and rounding to 3 significant digits
+#     abs_err, rel_err = compute_errors(true_params, est_params)
+#     est_params_rounded = {k: round_sig(v, 3) for k, v in est_params.items()}
+#     abs_err_rounded = {k: round_sig(v, 3) for k, v in abs_err.items()}
+#     rel_err_rounded = {k: round_sig(v, 3) for k, v in rel_err.items()}
+
+#     return jsonify({
+#         "system": fig_to_base64(fig_sys),
+#         "hist": fig_to_base64(fig_hist),
+#         "system_noise": fig_to_base64(fig_sys_noise),
+#         "fit": fig_to_base64(fig_fit),
+#         "estimated": est_params_rounded,
+#         "r2": r2,
+#         "abs_err": abs_err_rounded,
+#         "rel_err": rel_err_rounded,
+#         "snr": float(snr),
+#         "best_window": best_window_info,
+#         "r2_values": r2_results
+#     })
+
 @app.route("/run", methods=["POST"])
 def run_one():
     data = request.json
@@ -184,7 +292,7 @@ def run_one():
     do_fit = bool(data.get("fit", True))
     window_method = data.get("window_method", "transformed")
 
-    # map params
+    # true params
     if model == "linear":
         true_params = {"A": a, "B": b}
     elif model == "exponential":
@@ -192,92 +300,193 @@ def run_one():
     else:
         true_params = {"a": a, "b": b}
 
-    # generate system + single noise vector (for this run)
+    # system
     x, y_true = generate_system(model, (a, b), N, xmin, xmax)
+
+    # ---- NOISE (GENERATE ONCE) ----
     if noise_type == "gaussian":
         noise = np.random.normal(0, sigma, size=N)
     else:
         noise = np.random.uniform(-sigma, sigma, size=N)
+
+    # ✅ STORE NOISE IN SESSION
+    session["last_noise"] = noise.tolist()
+    session["last_noise_meta"] = {
+        "N": N,
+        "sigma": sigma,
+        "noise_type": noise_type
+    }
+
     y_noisy = y_true + noise
 
-    # compute SNR (dB)
-    snr = 20.0 * np.log10((np.linalg.norm(y_true) + 1e-12) / (np.linalg.norm(noise) + 1e-12))
+    # SNR
+    snr = 20.0 * np.log10(
+        (np.linalg.norm(y_true) + 1e-12) /
+        (np.linalg.norm(noise) + 1e-12)
+    )
 
-    # Figures
+    # plots
     fig_sys = plot_system(x, y_true)
     fig_hist = plot_hist(noise, bins)
     fig_sys_noise = plot_system_noise(x, y_true, y_noisy)
 
-    # Regression
-    est_params = {k: 0.0 for k in true_params.keys()}
+    est_params = {}
+    abs_err = {}
+    rel_err = {}
     r2 = 0.0
     best_window_info = {}
     r2_results = {}
     y_fit = np.zeros_like(x)
 
     if do_fit:
-        xt_all, yt_all, mask_all = apply_transform(model, x, y_noisy)
-
-        if window_method == "original":
-            if model == "linear":
-                xt = x.copy()
-                yt = y_noisy.copy()
-            else:
-                xt_tmp, yt_tmp, mask_tmp = apply_transform(model, x, y_noisy)
-                xt = xt_tmp.copy()
-                yt = yt_tmp.copy()
-            best, r2_results = evaluate_windows(xt, yt, mode="original")
-            b0, b1, r2 = best["b0"], best["b1"], best["r2"]
+        xt, yt, _ = apply_transform(model, x, y_noisy)
+        if len(xt) >= 2:
+            best, r2_results = evaluate_windows(xt, yt, window_method)
+            b0, b1 = best["b0"], best["b1"]
+            r2 = best["r2"]
             best_window_info = best
-        else:
-            xt, yt, mask = apply_transform(model, x, y_noisy)
-            if len(xt) >= 2:
-                best, r2_results = evaluate_windows(xt, yt, mode="transformed")
-                b0, b1, r2 = best["b0"], best["b1"], best["r2"]
-                best_window_info = best
-            else:
-                b0, b1, r2 = 0.0, 0.0, 0.0
-                best_window_info = {"ratio": "N/A", "r2": r2}
+            est_params = inverse_params(model, b0, b1)
 
-        est_params = inverse_params(model, b0, b1)
-
-        # reconstruct fitted curve
-        if model == "linear":
-            y_fit = est_params["A"] * x + est_params["B"]
-        elif model == "exponential":
-            y_fit = est_params["lambda"] * np.exp(est_params["mu"] * x)
-        elif model == "power":
-            x_pos = np.maximum(x, 1e-8)
-            y_fit = est_params["a"] * (x_pos ** est_params["b"])
-        elif model == "logarithmic":
-            x_pos = np.maximum(x, 1e-8)
-            y_fit = est_params["a"] * np.log(x_pos) + est_params["b"]
+            if model == "linear":
+                y_fit = est_params["A"] * x + est_params["B"]
+            elif model == "exponential":
+                y_fit = est_params["lambda"] * np.exp(est_params["mu"] * x)
+            elif model == "power":
+                x_pos = np.maximum(x, 1e-8)
+                y_fit = est_params["a"] * (x_pos ** est_params["b"])
+            elif model == "logarithmic":
+                x_pos = np.maximum(x, 1e-8)
+                y_fit = est_params["a"] * np.log(x_pos) + est_params["b"]
 
     fig_fit = plot_fit(x, y_noisy, y_fit)
 
-    # errors and rounding to 3 significant digits
     abs_err, rel_err = compute_errors(true_params, est_params)
-    est_params_rounded = {k: round_sig(v, 3) for k, v in est_params.items()}
-    abs_err_rounded = {k: round_sig(v, 3) for k, v in abs_err.items()}
-    rel_err_rounded = {k: round_sig(v, 3) for k, v in rel_err.items()}
 
     return jsonify({
         "system": fig_to_base64(fig_sys),
         "hist": fig_to_base64(fig_hist),
         "system_noise": fig_to_base64(fig_sys_noise),
         "fit": fig_to_base64(fig_fit),
-        "estimated": est_params_rounded,
+        "estimated": {k: round_sig(v, 3) for k, v in est_params.items()},
+        "abs_err": {k: round_sig(v, 3) for k, v in abs_err.items()},
+        "rel_err": {k: round_sig(v, 3) for k, v in rel_err.items()},
         "r2": r2,
-        "abs_err": abs_err_rounded,
-        "rel_err": rel_err_rounded,
         "snr": float(snr),
         "best_window": best_window_info,
         "r2_values": r2_results
     })
 
+
+# @app.route("/export_pdf", methods=["POST"])
+# def export_pdf():
+#     # Accept the same payload as /run to create a small PDF report for the current parameters.
+#     data = request.json or {}
+#     model = data.get("model", "linear")
+#     a = float(data.get("a", 1.0))
+#     b = float(data.get("b", 0.0))
+#     xmin = float(data.get("xmin", 0.0))
+#     xmax = float(data.get("xmax", 10.0))
+#     N = int(data.get("N", 50))
+#     sigma = float(data.get("sigma", 0.1))
+#     bins = int(data.get("bins", 20))
+#     noise_type = data.get("noise_type", "gaussian")
+#     window_method = data.get("window_method", "transformed")
+#     do_fit = bool(data.get("fit", True))
+
+#     # reuse run_one logic to compute everything and figures
+#     x, y_true = generate_system(model, (a,b), N, xmin, xmax)
+#     if noise_type == "gaussian":
+#         noise = np.random.normal(0, sigma, size=N)
+#     else:
+#         noise = np.random.uniform(-sigma, sigma, size=N)
+#     y_noisy = y_true + noise
+
+#     fig_sys = plot_system(x, y_true)
+#     fig_hist = plot_hist(noise, bins)
+#     fig_sys_noise = plot_system_noise(x, y_true, y_noisy)
+
+#     est_params = {}
+#     abs_err = {}
+#     rel_err = {}
+#     r2 = 0.0
+#     y_fit = np.zeros_like(x)
+#     best_window_info = {}
+#     r2_results = {}
+
+#     if do_fit:
+#         xt, yt, mask = apply_transform(model, x, y_noisy)
+#         if window_method == "original":
+#             if model == "linear":
+#                 xt = x.copy(); yt = y_noisy.copy()
+#             else:
+#                 xt_tmp, yt_tmp, mask_tmp = apply_transform(model, x, y_noisy)
+#                 xt = xt_tmp.copy(); yt = yt_tmp.copy()
+#             best, r2_results = evaluate_windows(xt, yt, mode="original")
+#         else:
+#             best, r2_results = evaluate_windows(xt, yt, mode="transformed")
+#         b0, b1 = best["b0"], best["b1"]
+#         r2 = best.get("r2", 0.0)
+#         est_params = inverse_params(model, b0, b1)
+#         if model == "linear":
+#             y_fit = est_params["A"] * x + est_params["B"]
+#         elif model == "exponential":
+#             y_fit = est_params["lambda"] * np.exp(est_params["mu"] * x)
+#         elif model == "power":
+#             x_pos = np.maximum(x, 1e-8); y_fit = est_params["a"] * (x_pos ** est_params["b"])
+#         elif model == "logarithmic":
+#             x_pos = np.maximum(x, 1e-8); y_fit = est_params["a"] * np.log(x_pos) + est_params["b"]
+
+#     fig_fit = plot_fit(x, y_noisy, y_fit)
+#     true_params = {}
+#     if model == "linear":
+#         true_params = {"A": a, "B": b}
+#     elif model == "exponential":
+#         true_params = {"lambda": a, "mu": b}
+#     else:
+#         true_params = {"a": a, "b": b}
+
+#     abs_err, rel_err = compute_errors(true_params, est_params)
+#     est_params_rounded = {k: round_sig(v, 3) for k, v in est_params.items()}
+#     abs_err_rounded = {k: round_sig(v, 3) for k, v in abs_err.items()}
+#     rel_err_rounded = {k: round_sig(v, 3) for k, v in rel_err.items()}
+
+#     # Build PDF
+#     buf = BytesIO()
+#     with PdfPages(buf) as pdf:
+#         # page 1: plots grid
+#         fig_page, axs = plt.subplots(2, 2, figsize=(8.27, 11.69))  # A4-ish
+#         # True system
+#         axs[0,0].plot(x, y_true, lw=2); axs[0,0].set_title("True System"); axs[0,0].grid(alpha=0.2)
+#         # Noise histogram
+#         axs[0,1].hist(noise, bins=bins, edgecolor="k", alpha=0.7); axs[0,1].set_title("Noise Histogram")
+#         # System + Noise
+#         axs[1,0].plot(x, y_true, color="black", lw=1.5); axs[1,0].scatter(x, y_noisy, s=8, alpha=0.8)
+#         axs[1,0].set_title("System + Noise")
+#         # Fit
+#         axs[1,1].scatter(x, y_noisy, s=8, alpha=0.6); axs[1,1].plot(x, y_fit, lw=2); axs[1,1].set_title("Regression Fit")
+#         plt.tight_layout()
+#         pdf.savefig(fig_page)
+#         plt.close(fig_page)
+
+#         # page 2: parameter table
+#         fig_table = plt.figure(figsize=(8.27, 11.69))
+#         plt.axis('off')
+#         txt = f"Model: {model}\nN: {N}\nx range: [{xmin}, {xmax}]\nNoise: {noise_type} (σ={sigma})\n\n"
+#         txt += "Parameters (True | Estimated | Abs err | Rel err %)\n\n"
+#         for k in true_params.keys():
+#             t = true_params.get(k, "--")
+#             e = est_params_rounded.get(k, "--")
+#             ae = abs_err_rounded.get(k, "--")
+#             re = rel_err_rounded.get(k, "--")
+#             txt += f"{k} : {t}  |  {e}  |  {ae}  |  {re}\n"
+#         plt.text(0.01, 0.99, txt, va='top', ha='left', fontfamily='monospace', fontsize=10)
+#         pdf.savefig(fig_table)
+#         plt.close(fig_table)
+
+#     buf.seek(0)
+#     return send_file(buf, as_attachment=True, download_name="ParamEstimator_report.pdf", mimetype="application/pdf")
 @app.route("/export_pdf", methods=["POST"])
 def export_pdf():
-    # Accept the same payload as /run to create a small PDF report for the current parameters.
     data = request.json or {}
     model = data.get("model", "linear")
     a = float(data.get("a", 1.0))
@@ -289,53 +498,42 @@ def export_pdf():
     bins = int(data.get("bins", 20))
     noise_type = data.get("noise_type", "gaussian")
     window_method = data.get("window_method", "transformed")
-    do_fit = bool(data.get("fit", True))
 
-    # reuse run_one logic to compute everything and figures
-    x, y_true = generate_system(model, (a,b), N, xmin, xmax)
-    if noise_type == "gaussian":
-        noise = np.random.normal(0, sigma, size=N)
-    else:
-        noise = np.random.uniform(-sigma, sigma, size=N)
+    # ---- REUSE STORED NOISE ----
+    noise = session.get("last_noise")
+    meta = session.get("last_noise_meta", {})
+
+    if noise is None:
+        return make_response("No stored noise. Run experiment first.", 400)
+
+    if meta.get("N") != N or meta.get("sigma") != sigma:
+        return make_response("Parameters changed. Re-run experiment.", 400)
+
+    noise = np.array(noise)
+
+    # system
+    x, y_true = generate_system(model, (a, b), N, xmin, xmax)
     y_noisy = y_true + noise
 
-    fig_sys = plot_system(x, y_true)
-    fig_hist = plot_hist(noise, bins)
-    fig_sys_noise = plot_system_noise(x, y_true, y_noisy)
+    # regression
+    xt, yt, _ = apply_transform(model, x, y_noisy)
+    best, r2_results = evaluate_windows(xt, yt, window_method)
+    b0, b1 = best["b0"], best["b1"]
+    r2 = best["r2"]
+    est_params = inverse_params(model, b0, b1)
 
-    est_params = {}
-    abs_err = {}
-    rel_err = {}
-    r2 = 0.0
-    y_fit = np.zeros_like(x)
-    best_window_info = {}
-    r2_results = {}
+    if model == "linear":
+        y_fit = est_params["A"] * x + est_params["B"]
+    elif model == "exponential":
+        y_fit = est_params["lambda"] * np.exp(est_params["mu"] * x)
+    elif model == "power":
+        x_pos = np.maximum(x, 1e-8)
+        y_fit = est_params["a"] * (x_pos ** est_params["b"])
+    elif model == "logarithmic":
+        x_pos = np.maximum(x, 1e-8)
+        y_fit = est_params["a"] * np.log(x_pos) + est_params["b"]
 
-    if do_fit:
-        xt, yt, mask = apply_transform(model, x, y_noisy)
-        if window_method == "original":
-            if model == "linear":
-                xt = x.copy(); yt = y_noisy.copy()
-            else:
-                xt_tmp, yt_tmp, mask_tmp = apply_transform(model, x, y_noisy)
-                xt = xt_tmp.copy(); yt = yt_tmp.copy()
-            best, r2_results = evaluate_windows(xt, yt, mode="original")
-        else:
-            best, r2_results = evaluate_windows(xt, yt, mode="transformed")
-        b0, b1 = best["b0"], best["b1"]
-        r2 = best.get("r2", 0.0)
-        est_params = inverse_params(model, b0, b1)
-        if model == "linear":
-            y_fit = est_params["A"] * x + est_params["B"]
-        elif model == "exponential":
-            y_fit = est_params["lambda"] * np.exp(est_params["mu"] * x)
-        elif model == "power":
-            x_pos = np.maximum(x, 1e-8); y_fit = est_params["a"] * (x_pos ** est_params["b"])
-        elif model == "logarithmic":
-            x_pos = np.maximum(x, 1e-8); y_fit = est_params["a"] * np.log(x_pos) + est_params["b"]
-
-    fig_fit = plot_fit(x, y_noisy, y_fit)
-    true_params = {}
+    # true params
     if model == "linear":
         true_params = {"A": a, "B": b}
     elif model == "exponential":
@@ -344,45 +542,35 @@ def export_pdf():
         true_params = {"a": a, "b": b}
 
     abs_err, rel_err = compute_errors(true_params, est_params)
-    est_params_rounded = {k: round_sig(v, 3) for k, v in est_params.items()}
-    abs_err_rounded = {k: round_sig(v, 3) for k, v in abs_err.items()}
-    rel_err_rounded = {k: round_sig(v, 3) for k, v in rel_err.items()}
 
-    # Build PDF
+    # ---- PDF ----
     buf = BytesIO()
     with PdfPages(buf) as pdf:
-        # page 1: plots grid
-        fig_page, axs = plt.subplots(2, 2, figsize=(8.27, 11.69))  # A4-ish
-        # True system
-        axs[0,0].plot(x, y_true, lw=2); axs[0,0].set_title("True System"); axs[0,0].grid(alpha=0.2)
-        # Noise histogram
-        axs[0,1].hist(noise, bins=bins, edgecolor="k", alpha=0.7); axs[0,1].set_title("Noise Histogram")
-        # System + Noise
-        axs[1,0].plot(x, y_true, color="black", lw=1.5); axs[1,0].scatter(x, y_noisy, s=8, alpha=0.8)
-        axs[1,0].set_title("System + Noise")
-        # Fit
-        axs[1,1].scatter(x, y_noisy, s=8, alpha=0.6); axs[1,1].plot(x, y_fit, lw=2); axs[1,1].set_title("Regression Fit")
+        fig, axs = plt.subplots(2, 2, figsize=(8.27, 11.69))
+        axs[0,0].plot(x, y_true); axs[0,0].set_title("True System")
+        axs[0,1].hist(noise, bins=bins); axs[0,1].set_title("Noise")
+        axs[1,0].scatter(x, y_noisy, s=8); axs[1,0].set_title("System + Noise")
+        axs[1,1].scatter(x, y_noisy, s=8); axs[1,1].plot(x, y_fit); axs[1,1].set_title("Fit")
         plt.tight_layout()
-        pdf.savefig(fig_page)
-        plt.close(fig_page)
+        pdf.savefig(fig)
+        plt.close(fig)
 
-        # page 2: parameter table
-        fig_table = plt.figure(figsize=(8.27, 11.69))
-        plt.axis('off')
-        txt = f"Model: {model}\nN: {N}\nx range: [{xmin}, {xmax}]\nNoise: {noise_type} (σ={sigma})\n\n"
+        fig2 = plt.figure(figsize=(8.27, 11.69))
+        plt.axis("off")
+        txt = f"Model: {model}\nN: {N}\nσ: {sigma}\n\n"
         txt += "Parameters (True | Estimated | Abs err | Rel err %)\n\n"
-        for k in true_params.keys():
-            t = true_params.get(k, "--")
-            e = est_params_rounded.get(k, "--")
-            ae = abs_err_rounded.get(k, "--")
-            re = rel_err_rounded.get(k, "--")
-            txt += f"{k} : {t}  |  {e}  |  {ae}  |  {re}\n"
-        plt.text(0.01, 0.99, txt, va='top', ha='left', fontfamily='monospace', fontsize=10)
-        pdf.savefig(fig_table)
-        plt.close(fig_table)
+        for k in true_params:
+            txt += f"{k}: {true_params[k]} | {round_sig(est_params[k],3)} | "
+            txt += f"{round_sig(abs_err[k],3)} | {round_sig(rel_err[k],3)}\n"
+        plt.text(0.01, 0.99, txt, va="top", family="monospace")
+        pdf.savefig(fig2)
+        plt.close(fig2)
 
     buf.seek(0)
-    return send_file(buf, as_attachment=True, download_name="ParamEstimator_report.pdf", mimetype="application/pdf")
+    return send_file(buf, as_attachment=True,
+                     download_name="ParamEstimator_report.pdf",
+                     mimetype="application/pdf")
+
 
 @app.route("/grid", methods=["POST"])
 def run_grid():
